@@ -10,3 +10,6 @@ backend/dist/
 coverage/
 .pytest_cache/
 *.class
+
+# 本地文件降级存储（无 MongoDB 时后端写入）
+backend/data/

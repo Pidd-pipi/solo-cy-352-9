@@ -166,3 +166,169 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------------- 运营台：包厢预约 / 会员储值 ---------------- */
+
+.topbar-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stat-chip {
+  border-radius: 999px;
+  padding: 7px 14px;
+  background: color-mix(in srgb, #3268b8 13%, white);
+  border: 1px solid color-mix(in srgb, #3268b8 30%, transparent);
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.workbench-tabs {
+  border: 1px solid color-mix(in srgb, #19212e 13%, transparent);
+  background: color-mix(in srgb, #f4f7fb 86%, white 14%);
+  border-radius: 8px;
+  box-shadow: 0 18px 50px color-mix(in srgb, #19212e 10%, transparent);
+  padding: clamp(16px, 3vw, 30px);
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.section-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.section-head p {
+  margin: 0;
+  color: color-mix(in srgb, #19212e 62%, #3268b8 38%);
+  line-height: 1.7;
+  max-width: 720px;
+}
+
+.room-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.room-card {
+  border-radius: 8px;
+}
+
+.room-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.room-meta {
+  display: flex;
+  gap: 16px;
+  color: color-mix(in srgb, #19212e 75%, transparent);
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.room-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.facility-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+  margin-bottom: 12px;
+}
+
+.room-bookings {
+  border-top: 1px dashed color-mix(in srgb, #19212e 18%, transparent);
+  padding-top: 10px;
+  margin-bottom: 12px;
+  min-height: 34px;
+}
+
+.mini-booking {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.empty-hint {
+  color: color-mix(in srgb, #19212e 45%, transparent);
+  font-size: 13px;
+  margin: 0;
+}
+
+.room-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.maintenance-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: color-mix(in srgb, #19212e 65%, transparent);
+}
+
+.amount-ok {
+  color: #1f8a4c;
+  font-weight: 700;
+}
+
+.amount-bad {
+  color: #c43c2f;
+  font-weight: 700;
+}
+
+.points-text {
+  margin-left: 8px;
+  color: #b8860b;
+  font-size: 12px;
+}
+
+.booking-id {
+  margin-left: 8px;
+  color: color-mix(in srgb, #19212e 40%, transparent);
+  font-size: 12px;
+}
+
+.balance-text {
+  font-weight: 800;
+  color: #3268b8;
+}
+
+.member-phone {
+  color: color-mix(in srgb, #19212e 55%, transparent);
+  font-size: 12px;
+}
+
+.quick-amounts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.recharge-desc {
+  margin-bottom: 4px;
+}
+
