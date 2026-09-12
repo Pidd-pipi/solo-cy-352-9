@@ -1,0 +1,168 @@
+:root {
+  color: #19212e;
+  background: #f4f7fb;
+  font-family: "Avenir Next", "Gill Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #3268b8 16%, transparent), transparent 34%),
+    radial-gradient(circle at 86% 12%, color-mix(in srgb, #cf5c36 24%, transparent), transparent 28%),
+    #f4f7fb;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px clamp(20px, 4vw, 56px);
+  background: color-mix(in srgb, #f4f7fb 86%, white 14%);
+  border-bottom: 1px solid color-mix(in srgb, #19212e 12%, transparent);
+}
+
+.brand-code {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: color-mix(in srgb, #19212e 58%, #3268b8 42%);
+}
+
+.brand-title {
+  margin: 4px 0 0;
+  font-size: clamp(24px, 3vw, 42px);
+  line-height: 1.06;
+  font-weight: 800;
+}
+
+.workspace {
+  width: min(1180px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: clamp(24px, 5vw, 56px) 0 64px;
+}
+
+.lead-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: clamp(18px, 3vw, 32px);
+}
+
+.hero-panel,
+.work-panel,
+.feature-panel,
+.metric-card {
+  border: 1px solid color-mix(in srgb, #19212e 13%, transparent);
+  background: color-mix(in srgb, #f4f7fb 86%, white 14%);
+  box-shadow: 0 18px 50px color-mix(in srgb, #19212e 10%, transparent);
+}
+
+.hero-panel,
+.work-panel {
+  border-radius: 8px;
+  padding: clamp(22px, 4vw, 42px);
+}
+
+.hero-panel p {
+  color: color-mix(in srgb, #19212e 72%, #3268b8 28%);
+  font-size: clamp(16px, 2vw, 19px);
+  line-height: 1.8;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metric-card,
+.feature-panel {
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.metric-value {
+  display: block;
+  margin-top: 10px;
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 800;
+}
+
+.feature-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 14px;
+  margin: 26px 0;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.feature-panel strong {
+  display: block;
+  margin: 10px 0;
+}
+
+.feature-panel p {
+  line-height: 1.65;
+}
+
+.work-panel {
+  margin-top: 26px;
+}
+
+.plain-table {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, #19212e 12%, transparent);
+  border-radius: 8px;
+}
+
+.plain-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(90px, 0.7fr) minmax(90px, 0.6fr) minmax(80px, 0.6fr);
+  gap: 12px;
+  padding: 13px 14px;
+  border-top: 1px solid color-mix(in srgb, #19212e 10%, transparent);
+}
+
+.plain-row:first-child {
+  border-top: 0;
+}
+
+.plain-head {
+  background: color-mix(in srgb, #3268b8 12%, transparent);
+  font-weight: 800;
+}
+
+.pill {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, #3268b8 14%, transparent);
+  color: #19212e;
+  font-weight: 700;
+}
+
+@media (max-width: 860px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lead-grid,
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .plain-row {
+    grid-template-columns: 1fr;
+  }
+}
