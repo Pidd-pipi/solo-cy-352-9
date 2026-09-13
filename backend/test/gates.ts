@@ -1,5 +1,12 @@
 import { MemoryStorage } from "./memory-storage";
-import type { Booking, Member, Room } from "../src/db/types";
+import type {
+  Booking,
+  BookingStatus,
+  Member,
+  Room,
+  WalletTxInput,
+  WalletTxResult,
+} from "../src/db/types";
 import { SEED_MEMBERS, SEED_ROOMS } from "../src/db/seed";
 
 /**
@@ -68,8 +75,12 @@ export interface GateHooks {
   updateRoomMaintenance?: Gate;
   /** 取消预约锁外读取点（getBooking）——用于让取消停在锁前 */
   getBooking?: Gate;
-  /** 扣款点（chargeMember） */
-  chargeMember?: Gate;
+  /** 预约状态迁移点（setBookingStatus：确认 booked / 置 cancelled/failed） */
+  setBookingStatus?: Gate;
+  /** 资金流水写入点（applyWalletTransaction：扣款或退款） */
+  applyWalletTransaction?: Gate;
+  /** 预约插入点（insertBooking：pending_payment 落库） */
+  insertBooking?: Gate;
 }
 
 /**
@@ -91,7 +102,7 @@ export class GatedStorage extends MemoryStorage {
     return super.getMember(id);
   }
 
-  override async listBookings(filter?: { status?: "booked" | "cancelled" }): Promise<Booking[]> {
+  override async listBookings(filter?: { status?: BookingStatus }): Promise<Booking[]> {
     await this.hooks.listBookings?.enter();
     return super.listBookings(filter);
   }
@@ -106,9 +117,23 @@ export class GatedStorage extends MemoryStorage {
     return super.getBooking(id);
   }
 
-  override async chargeMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
-    await this.hooks.chargeMember?.enter();
-    return super.chargeMember(id, amount, pointsDelta);
+  override async setBookingStatus(
+    id: string,
+    expectedStatuses: BookingStatus[],
+    nextStatus: BookingStatus,
+  ): Promise<boolean> {
+    await this.hooks.setBookingStatus?.enter();
+    return super.setBookingStatus(id, expectedStatuses, nextStatus);
+  }
+
+  override async applyWalletTransaction(memberId: string, tx: WalletTxInput): Promise<WalletTxResult> {
+    await this.hooks.applyWalletTransaction?.enter();
+    return super.applyWalletTransaction(memberId, tx);
+  }
+
+  override async insertBooking(booking: Booking): Promise<Booking> {
+    await this.hooks.insertBooking?.enter();
+    return super.insertBooking(booking);
   }
 }
 

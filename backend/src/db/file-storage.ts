@@ -1,6 +1,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { Booking, Member, Room, Storage } from "./types";
+import type {
+  Booking,
+  BookingStatus,
+  Member,
+  Room,
+  Storage,
+  WalletTxInput,
+  WalletTxResult,
+} from "./types";
 
 interface DatabaseShape {
   rooms: Room[];
@@ -12,7 +20,7 @@ const EMPTY_DB: DatabaseShape = { rooms: [], bookings: [], members: [] };
 
 /**
  * 无 MongoDB 时的降级存储：所有数据写入单个 JSON 文件。
- * 同一进程内用 Promise 队列串行化写操作，保证扣款等复合操作的原子性。
+ * 同一进程内用 Promise 队列串行化写操作，保证资金台账写入的原子性。
  */
 export class FileStorage implements Storage {
   private readonly filePath: string;
@@ -29,7 +37,12 @@ export class FileStorage implements Storage {
     }
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
-      this.cache = { ...EMPTY_DB, ...(JSON.parse(raw) as DatabaseShape) };
+      const parsed = { ...EMPTY_DB, ...(JSON.parse(raw) as DatabaseShape) };
+      // 兼容旧数据：补全新增字段
+      for (const member of parsed.members) {
+        member.walletTransactions ??= [];
+      }
+      this.cache = parsed;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
@@ -57,7 +70,10 @@ export class FileStorage implements Storage {
     this.cache = {
       rooms: data.rooms ?? [],
       bookings: data.bookings ?? [],
-      members: data.members ?? [],
+      members: (data.members ?? []).map((member) => ({
+        ...member,
+        walletTransactions: member.walletTransactions ?? [],
+      })),
     };
     await this.persist();
   }
@@ -69,7 +85,6 @@ export class FileStorage implements Storage {
 
   async getRoom(id: string): Promise<Room | null> {
     const db = await this.load();
-    // 返回副本，与 Mongo lean() 的快照语义保持一致
     const room = db.rooms.find((item) => item.id === id);
     return room ? { ...room, facilities: [...room.facilities] } : null;
   }
@@ -82,10 +97,10 @@ export class FileStorage implements Storage {
     }
     room.underMaintenance = underMaintenance;
     await this.persist();
-    return { ...room };
+    return { ...room, facilities: [...room.facilities] };
   }
 
-  async listBookings(filter?: { status?: "booked" | "cancelled" }): Promise<Booking[]> {
+  async listBookings(filter?: { status?: BookingStatus }): Promise<Booking[]> {
     const db = await this.load();
     const rows = filter?.status
       ? db.bookings.filter((booking) => booking.status === filter.status)
@@ -108,33 +123,49 @@ export class FileStorage implements Storage {
     return booking ? { ...booking } : null;
   }
 
-  async markBookingCancelled(id: string): Promise<boolean> {
+  async findBookingByRequestId(requestId: string): Promise<Booking | null> {
+    const db = await this.load();
+    const booking = db.bookings.find((item) => item.requestId === requestId);
+    return booking ? { ...booking } : null;
+  }
+
+  async setBookingStatus(
+    id: string,
+    expectedStatuses: BookingStatus[],
+    nextStatus: BookingStatus,
+  ): Promise<boolean> {
     const db = await this.load();
     const booking = db.bookings.find((item) => item.id === id);
-    if (!booking || booking.status !== "booked") {
+    if (!booking || !expectedStatuses.includes(booking.status)) {
       return false;
     }
-    booking.status = "cancelled";
+    booking.status = nextStatus;
     await this.persist();
     return true;
   }
 
   async listMembers(): Promise<Member[]> {
     const db = await this.load();
-    return db.members.map((member) => ({ ...member }));
+    return db.members.map((member) => ({
+      ...member,
+      walletTransactions: member.walletTransactions.map((tx) => ({ ...tx })),
+    }));
   }
 
   async getMember(id: string): Promise<Member | null> {
     const db = await this.load();
     const member = db.members.find((item) => item.id === id);
-    return member ? { ...member } : null;
+    return member
+      ? { ...member, walletTransactions: member.walletTransactions.map((tx) => ({ ...tx })) }
+      : null;
   }
 
   async insertMember(member: Member): Promise<Member> {
     const db = await this.load();
-    db.members.push({ ...member });
+    const record = { ...member, walletTransactions: member.walletTransactions ?? [] };
+    db.members.push(record);
     await this.persist();
-    return { ...member };
+    return { ...record, walletTransactions: record.walletTransactions.map((tx) => ({ ...tx })) };
   }
 
   async rechargeMember(id: string, amount: number): Promise<Member | null> {
@@ -147,32 +178,57 @@ export class FileStorage implements Storage {
     member.totalRecharge = round2(member.totalRecharge + amount);
     member.level = levelFor(member.totalRecharge);
     await this.persist();
-    return { ...member };
+    return this.snapshotMember(member);
   }
 
-  /** 余额足够才扣款，否则返回 null（调用方按“余额不足”处理）。 */
-  async chargeMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
+  /**
+   * 幂等资金流水：余额、积分与流水在同一次持久化中提交。
+   * - 同 id 重复提交：duplicate，资金不变；
+   * - charge 余额不足：insufficient，不写流水；
+   * - refund 找不到对应扣款：no_linked_charge，不加钱。
+   */
+  async applyWalletTransaction(memberId: string, tx: WalletTxInput): Promise<WalletTxResult> {
     const db = await this.load();
-    const member = db.members.find((item) => item.id === id);
-    if (!member || round2(member.balance - amount) < 0) {
-      return null;
-    }
-    member.balance = round2(member.balance - amount);
-    member.points = Math.max(0, member.points + pointsDelta);
-    await this.persist();
-    return { ...member };
-  }
-
-  async refundMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
-    const db = await this.load();
-    const member = db.members.find((item) => item.id === id);
+    const member = db.members.find((item) => item.id === memberId);
     if (!member) {
-      return null;
+      return { outcome: "member_not_found" };
     }
-    member.balance = round2(member.balance + amount);
-    member.points = Math.max(0, member.points + pointsDelta);
+    member.walletTransactions ??= [];
+    if (member.walletTransactions.some((item) => item.id === tx.id)) {
+      return { outcome: "duplicate", member: this.snapshotMember(member) };
+    }
+
+    if (tx.kind === "charge") {
+      if (round2(member.balance - tx.amount) < 0) {
+        return { outcome: "insufficient", member: this.snapshotMember(member) };
+      }
+      member.balance = round2(member.balance - tx.amount);
+      member.points = Math.max(0, member.points + tx.pointsDelta);
+      member.walletTransactions.push({ ...tx, createdAt: new Date().toISOString() });
+      await this.persist();
+      return { outcome: "applied", member: this.snapshotMember(member) };
+    }
+
+    const chargeExists = tx.linkedTransactionId
+      ? member.walletTransactions.some(
+          (item) => item.id === tx.linkedTransactionId && item.kind === "charge",
+        )
+      : false;
+    if (!chargeExists) {
+      return { outcome: "no_linked_charge", member: this.snapshotMember(member) };
+    }
+    member.balance = round2(member.balance + tx.amount);
+    member.points = Math.max(0, member.points + tx.pointsDelta);
+    member.walletTransactions.push({ ...tx, createdAt: new Date().toISOString() });
     await this.persist();
-    return { ...member };
+    return { outcome: "applied", member: this.snapshotMember(member) };
+  }
+
+  private snapshotMember(member: Member): Member {
+    return {
+      ...member,
+      walletTransactions: (member.walletTransactions ?? []).map((tx) => ({ ...tx })),
+    };
   }
 }
 

@@ -1,6 +1,15 @@
 /** 会员等级：储值余额越高等级越高，消费时享受对应折扣。 */
 export type MemberLevel = "bronze" | "silver" | "gold";
 
+/**
+ * 预约状态机：
+ * - pending_payment：已占用时段、等待扣款（瞬时态；崩溃后由对账收敛）
+ * - booked：扣款成功、预约生效
+ * - cancelled：已取消且退款流水已入账（不可能出现“已取消但未退款”）
+ * - failed：扣款失败或无法完成，时段已释放，不产生任何资金变动
+ */
+export type BookingStatus = "pending_payment" | "booked" | "cancelled" | "failed";
+
 export interface Room {
   id: string;
   name: string;
@@ -15,8 +24,23 @@ export interface Room {
   createdAt: string;
 }
 
+/** 一笔钱包流水：扣款与退款都先写流水，天然幂等、可审计、可对账。 */
+export interface WalletTransaction {
+  /** 幂等键，如 `${bookingId}:charge` / `${bookingId}:refund` */
+  id: string;
+  kind: "charge" | "refund";
+  amount: number;
+  /** 积分变动：扣款为正（累积），退款为负（回退） */
+  pointsDelta: number;
+  /** 退款流水必须指向对应的扣款流水，禁止无中生有地加钱 */
+  linkedTransactionId?: string;
+  createdAt: string;
+}
+
 export interface Booking {
   id: string;
+  /** 客户端幂等键：同一请求重试时复用同一预约，而不是再扣一次款 */
+  requestId?: string;
   roomId: string;
   roomName: string;
   memberId: string;
@@ -33,7 +57,7 @@ export interface Booking {
   pointsEarned: number;
   /** 预约时使用的会员等级，用于取消时回退对应折扣逻辑 */
   level: MemberLevel;
-  status: "booked" | "cancelled";
+  status: BookingStatus;
   createdAt: string;
 }
 
@@ -48,7 +72,26 @@ export interface Member {
   points: number;
   /** 累计充值金额 */
   totalRecharge: number;
+  /** 钱包流水台账：余额/积分的每次变动都有幂等记录 */
+  walletTransactions: WalletTransaction[];
   createdAt: string;
+}
+
+/** 幂等资金操作的结果。 */
+export type WalletTxResult =
+  | { outcome: "applied"; member: Member }
+  | { outcome: "duplicate"; member: Member }
+  | { outcome: "insufficient"; member: Member }
+  | { outcome: "no_linked_charge"; member: Member }
+  | { outcome: "member_not_found" };
+
+export interface WalletTxInput {
+  id: string;
+  kind: "charge" | "refund";
+  amount: number;
+  pointsDelta: number;
+  /** 退款时必填：对应扣款流水 id */
+  linkedTransactionId?: string;
 }
 
 /** 数据存储抽象：MongoDB 与本地文件两种实现共用同一接口。 */
@@ -57,10 +100,20 @@ export interface Storage {
   getRoom(id: string): Promise<Room | null>;
   updateRoomMaintenance(id: string, underMaintenance: boolean): Promise<Room | null>;
 
-  listBookings(filter?: { status?: "booked" | "cancelled" }): Promise<Booking[]>;
+  listBookings(filter?: { status?: BookingStatus }): Promise<Booking[]>;
   insertBooking(booking: Booking): Promise<Booking>;
   getBooking(id: string): Promise<Booking | null>;
-  markBookingCancelled(id: string): Promise<boolean>;
+  /** 客户端幂等键查询同一请求已创建的预约 */
+  findBookingByRequestId(requestId: string): Promise<Booking | null>;
+  /**
+   * 原子状态迁移（compare-and-set）：仅当当前状态在 expectedStatuses 中时才写入 nextStatus。
+   * 返回 false 表示状态已被其他操作改变。
+   */
+  setBookingStatus(
+    id: string,
+    expectedStatuses: BookingStatus[],
+    nextStatus: BookingStatus,
+  ): Promise<boolean>;
 
   listMembers(): Promise<Member[]>;
   getMember(id: string): Promise<Member | null>;
@@ -68,10 +121,11 @@ export interface Storage {
   /** 原子地充值：余额、累计充值同时增加 */
   rechargeMember(id: string, amount: number): Promise<Member | null>;
   /**
-   * 原子扣款（余额足够才生效）。
-   * 同时按积分差额更新积分（正数为累积，负数为回退）。
+   * 幂等资金流水：
+   * - 同一 tx.id 重复提交返回 duplicate，余额积分不再变动；
+   * - charge 在余额不足时返回 insufficient，不写流水、不扣款；
+   * - refund 必须存在 linkedTransactionId 指向的扣款流水，否则 no_linked_charge。
+   * 余额、积分与流水的写入在同一次原子更新内完成。
    */
-  chargeMember(id: string, amount: number, pointsDelta: number): Promise<Member | null>;
-  /** 取消预约时退款：余额回补、积分回退（积分不为负）。 */
-  refundMember(id: string, amount: number, pointsDelta: number): Promise<Member | null>;
+  applyWalletTransaction(memberId: string, tx: WalletTxInput): Promise<WalletTxResult>;
 }

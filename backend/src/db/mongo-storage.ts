@@ -1,4 +1,4 @@
-import type { Booking, Member, Room, Storage } from "./types";
+import type { Booking, BookingStatus, Member, Room, Storage, WalletTxInput, WalletTxResult } from "./types";
 import { BookingModel, MemberModel, RoomModel } from "./mongoose-models";
 
 type RoomDoc = Room & { _id: unknown };
@@ -26,7 +26,11 @@ function normalizeMember(doc: MemberDoc | null): Member | null {
     return null;
   }
   const { _id, ...rest } = doc;
-  return { ...rest, id: String(_id) };
+  return {
+    ...rest,
+    id: String(_id),
+    walletTransactions: (rest.walletTransactions ?? []).map((tx) => ({ ...tx })),
+  };
 }
 
 export class MongoStorage implements Storage {
@@ -49,7 +53,7 @@ export class MongoStorage implements Storage {
     return normalizeRoom(doc);
   }
 
-  async listBookings(filter?: { status?: "booked" | "cancelled" }): Promise<Booking[]> {
+  async listBookings(filter?: { status?: BookingStatus }): Promise<Booking[]> {
     const query = filter?.status ? { status: filter.status } : {};
     const docs = (await BookingModel.find(query)
       .sort({ startTime: 1 })
@@ -58,8 +62,8 @@ export class MongoStorage implements Storage {
   }
 
   async insertBooking(booking: Booking): Promise<Booking> {
-    const { id: _ignored, ...fields } = booking;
-    const created = await BookingModel.create(fields);
+    const { id, ...fields } = booking;
+    const created = await BookingModel.create({ _id: id, ...fields });
     return normalizeBooking(created.toObject() as unknown as BookingDoc) as Booking;
   }
 
@@ -68,10 +72,19 @@ export class MongoStorage implements Storage {
     return normalizeBooking(doc);
   }
 
-  async markBookingCancelled(id: string): Promise<boolean> {
+  async findBookingByRequestId(requestId: string): Promise<Booking | null> {
+    const doc = (await BookingModel.findOne({ requestId }).lean()) as unknown as BookingDoc | null;
+    return normalizeBooking(doc);
+  }
+
+  async setBookingStatus(
+    id: string,
+    expectedStatuses: BookingStatus[],
+    nextStatus: BookingStatus,
+  ): Promise<boolean> {
     const result = await BookingModel.updateOne(
-      { _id: id, status: "booked" },
-      { $set: { status: "cancelled" } },
+      { _id: id, status: { $in: expectedStatuses } },
+      { $set: { status: nextStatus } },
     );
     return result.matchedCount === 1;
   }
@@ -87,13 +100,13 @@ export class MongoStorage implements Storage {
   }
 
   async insertMember(member: Member): Promise<Member> {
-    const { id: _ignored, ...fields } = member;
-    const created = await MemberModel.create(fields);
+    const { id, ...fields } = member;
+    const created = await MemberModel.create({ _id: id, ...fields });
     return normalizeMember(created.toObject() as unknown as MemberDoc) as Member;
   }
 
   async rechargeMember(id: string, amount: number): Promise<Member | null> {
-    // 单条聚合管道更新：金额取整到分，并按累计充值同步等级，避免 $inc 浮点误差与多次往返
+    // 单条聚合管道更新：金额取整到分，并按累计充值同步等级
     const updated = (await MemberModel.findByIdAndUpdate(
       id,
       [
@@ -118,37 +131,80 @@ export class MongoStorage implements Storage {
     return normalizeMember(updated);
   }
 
-  async chargeMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
-    // 余额条件 + 取整在同一条原子更新内完成，任何路径下都不会透支或留下浮点尾差
+  async applyWalletTransaction(memberId: string, tx: WalletTxInput): Promise<WalletTxResult> {
+    const now = new Date().toISOString();
+    const txLiteral = {
+      id: tx.id,
+      kind: tx.kind,
+      amount: tx.amount,
+      pointsDelta: tx.pointsDelta,
+      linkedTransactionId: tx.linkedTransactionId,
+      createdAt: now,
+    };
+
+    if (tx.kind === "charge") {
+      // 单文档原子条件更新：余额足够且流水不存在时，余额/积分/流水一次写入
+      const updated = (await MemberModel.findOneAndUpdate(
+        {
+          _id: memberId,
+          balance: { $gte: tx.amount },
+          "walletTransactions.id": { $ne: tx.id },
+        },
+        [
+          {
+            $set: {
+              balance: { $round: [{ $subtract: ["$balance", tx.amount] }, 2] },
+              points: { $max: [0, { $add: ["$points", tx.pointsDelta] }] },
+              walletTransactions: { $concatArrays: ["$walletTransactions", [txLiteral]] },
+            },
+          },
+        ],
+        { new: true },
+      ).lean()) as unknown as MemberDoc | null;
+      if (updated) {
+        return { outcome: "applied", member: normalizeMember(updated) as Member };
+      }
+      return this.classifyMiss(memberId, tx.id, "insufficient");
+    }
+
+    // refund：必须存在对应的扣款流水，且退款流水本身不能重复
     const updated = (await MemberModel.findOneAndUpdate(
-      { _id: id, balance: { $gte: amount } },
+      {
+        _id: memberId,
+        "walletTransactions.id": { $ne: tx.id },
+        walletTransactions: {
+          $elemMatch: { id: tx.linkedTransactionId, kind: "charge" },
+        },
+      },
       [
         {
           $set: {
-            balance: { $round: [{ $subtract: ["$balance", amount] }, 2] },
-            points: { $max: [0, { $add: ["$points", pointsDelta] }] },
+            balance: { $round: [{ $add: ["$balance", tx.amount] }, 2] },
+            points: { $max: [0, { $add: ["$points", tx.pointsDelta] }] },
+            walletTransactions: { $concatArrays: ["$walletTransactions", [txLiteral]] },
           },
         },
       ],
       { new: true },
     ).lean()) as unknown as MemberDoc | null;
-    return normalizeMember(updated);
+    if (updated) {
+      return { outcome: "applied", member: normalizeMember(updated) as Member };
+    }
+    return this.classifyMiss(memberId, tx.id, "no_linked_charge");
   }
 
-  async refundMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
-    // $max 保证取消预约回退积分后积分不会变成负数；金额取整到分
-    const updated = (await MemberModel.findOneAndUpdate(
-      { _id: id },
-      [
-        {
-          $set: {
-            balance: { $round: [{ $add: ["$balance", amount] }, 2] },
-            points: { $max: [0, { $add: ["$points", pointsDelta] }] },
-          },
-        },
-      ],
-      { new: true },
-    ).lean()) as unknown as MemberDoc | null;
-    return normalizeMember(updated);
+  /** 条件更新未命中时，区分会员不存在 / 幂等重复 / 业务拒绝。 */
+  private async classifyMiss(
+    memberId: string,
+    txId: string,
+    businessOutcome: "insufficient" | "no_linked_charge",
+  ): Promise<WalletTxResult> {
+    const doc = (await MemberModel.findById(memberId).lean()) as unknown as MemberDoc | null;
+    if (!doc) {
+      return { outcome: "member_not_found" };
+    }
+    const member = normalizeMember(doc) as Member;
+    const duplicate = member.walletTransactions.some((item) => item.id === txId);
+    return { outcome: duplicate ? "duplicate" : businessOutcome, member };
   }
 }

@@ -50,6 +50,7 @@ export const SEED_MEMBERS: Member[] = [
     balance: 500,
     points: 320,
     totalRecharge: 2200,
+    walletTransactions: [],
     createdAt: "2026-09-02T10:00:00.000Z",
   },
   {
@@ -60,6 +61,7 @@ export const SEED_MEMBERS: Member[] = [
     balance: 120,
     points: 88,
     totalRecharge: 600,
+    walletTransactions: [],
     createdAt: "2026-09-02T10:05:00.000Z",
   },
   {
@@ -70,6 +72,7 @@ export const SEED_MEMBERS: Member[] = [
     balance: 30,
     points: 12,
     totalRecharge: 100,
+    walletTransactions: [],
     createdAt: "2026-09-02T10:10:00.000Z",
   },
 ];

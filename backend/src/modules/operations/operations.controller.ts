@@ -55,8 +55,18 @@ export class OperationsController {
 
   createBooking = async (request: Request, response: Response, next: NextFunction) => {
     try {
-      const { roomId, memberId, startTime, endTime } = request.body ?? {};
-      const result = await this.service.createBooking({ roomId, memberId, startTime, endTime });
+      const { roomId, memberId, startTime, endTime, requestId } = request.body ?? {};
+      // 允许通过 Idempotency-Key 头传幂等键，重试同一请求不会重复扣款
+      const idempotencyKey =
+        (typeof requestId === "string" && requestId) ||
+        (request.headers["idempotency-key"] as string | undefined);
+      const result = await this.service.createBooking({
+        roomId,
+        memberId,
+        startTime,
+        endTime,
+        requestId: idempotencyKey,
+      });
       response.status(201).json(result);
     } catch (error) {
       next(error);
