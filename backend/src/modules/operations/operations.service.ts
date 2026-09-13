@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Booking, Member, Room, Storage } from "../../db/types";
 import { intervalsOverlap, quotePrice, round2 } from "../pricing";
+import { KeyedMutex } from "../../common/keyed-mutex";
 
 export class BusinessError extends Error {
   constructor(
@@ -13,6 +14,9 @@ export class BusinessError extends Error {
 }
 
 export class OperationsService {
+  /** 每个包厢一把串行锁，保证同包厢「查重-扣款-落单」原子化 */
+  private readonly roomLocks = new KeyedMutex();
+
   constructor(private readonly storage: Storage) {}
 
   // ---------------- 包厢 ----------------
@@ -22,7 +26,10 @@ export class OperationsService {
   }
 
   async setMaintenance(roomId: string, underMaintenance: boolean): Promise<Room> {
-    const room = await this.storage.updateRoomMaintenance(roomId, underMaintenance);
+    // 与下单共用包厢锁，保证维护标志的写入与下单时锁内的读取可线性化
+    const room = await this.roomLocks.runExclusive(roomId, () =>
+      this.storage.updateRoomMaintenance(roomId, underMaintenance),
+    );
     if (!room) {
       throw new BusinessError(404, "包厢不存在", "ROOM_NOT_FOUND");
     }
@@ -69,26 +76,44 @@ export class OperationsService {
     startTime: string;
     endTime: string;
   }): Promise<{ booking: Booking; member: Member }> {
-    const { room, member } = await this.requireRoomAndMember(input.roomId, input.memberId);
-
-    // 规则 1：维护中的包厢拒绝预约
-    if (room.underMaintenance) {
-      throw new BusinessError(409, `包厢「${room.name}」维护中，暂不接受预约`, "ROOM_IN_MAINTENANCE");
-    }
-
-    // 校验时间
+    // 资源存在性与时间格式可以在锁外校验，不改变竞争结果
+    await this.requireRoomAndMember(input.roomId, input.memberId);
     if (
       Number.isNaN(new Date(input.startTime).getTime()) ||
-      Number.isNaN(new Date(input.endTime).getTime())
+      Number.isNaN(new Date(input.endTime).getTime()) ||
+      new Date(input.endTime) <= new Date(input.startTime)
     ) {
-      throw new BusinessError(400, "预约时间格式不正确", "INVALID_TIME_RANGE");
+      throw new BusinessError(400, "预约结束时间必须晚于开始时间", "INVALID_TIME_RANGE");
     }
 
-    let quote;
-    try {
-      quote = quotePrice(room.hourlyRate, input.startTime, input.endTime, member.level);
-    } catch (error) {
-      throw new BusinessError(400, (error as Error).message, "INVALID_TIME_RANGE");
+    // 同一包厢的「查重 -> 扣款 -> 落单」必须串行：
+    // 并发预订同一包厢时，后进入临界区的请求一定能看到前一个已插入的预约，从而被冲突/余额规则拒绝。
+    return this.roomLocks.runExclusive(input.roomId, () =>
+      this.createBookingLocked(input.roomId, input.memberId, input.startTime, input.endTime),
+    );
+  }
+
+  private async createBookingLocked(
+    roomId: string,
+    memberId: string,
+    startTime: string,
+    endTime: string,
+  ): Promise<{ booking: Booking; member: Member }> {
+    // 锁内重读，确保维护状态、小时价、会员等级与余额都是最新快照
+    const room = await this.storage.getRoom(roomId);
+    if (!room) {
+      throw new BusinessError(404, "包厢不存在", "ROOM_NOT_FOUND");
+    }
+    const member = await this.storage.getMember(memberId);
+    if (!member) {
+      throw new BusinessError(404, "会员不存在", "MEMBER_NOT_FOUND");
+    }
+
+    const quote = quotePrice(room.hourlyRate, startTime, endTime, member.level);
+
+    // 规则 1：维护中的包厢拒绝预约（以锁内最新状态为准）
+    if (room.underMaintenance) {
+      throw new BusinessError(409, `包厢「${room.name}」维护中，暂不接受预约`, "ROOM_IN_MAINTENANCE");
     }
 
     // 规则 2：同一包厢时间重叠拒绝预约（半开区间，首尾相接允许）
@@ -96,7 +121,7 @@ export class OperationsService {
     const conflict = existing.find(
       (booking) =>
         booking.roomId === room.id &&
-        intervalsOverlap(booking.startTime, booking.endTime, input.startTime, input.endTime),
+        intervalsOverlap(booking.startTime, booking.endTime, startTime, endTime),
     );
     if (conflict) {
       throw new BusinessError(
@@ -106,7 +131,7 @@ export class OperationsService {
       );
     }
 
-    // 规则 3：余额不足拒绝预约（存储层再做一次原子兜底，防止并发透支）
+    // 规则 3：余额不足拒绝预约（存储层条件更新再做一次原子兜底，防止任何路径下透支）
     if (member.balance < quote.chargedAmount) {
       throw new BusinessError(
         402,
@@ -132,14 +157,14 @@ export class OperationsService {
       id: randomUUID(),
       roomId: room.id,
       roomName: room.name,
-      memberId: member.id,
-      memberName: member.name,
-      startTime: new Date(input.startTime).toISOString(),
-      endTime: new Date(input.endTime).toISOString(),
+      memberId: chargedMember.id,
+      memberName: chargedMember.name,
+      startTime: new Date(startTime).toISOString(),
+      endTime: new Date(endTime).toISOString(),
       baseAmount: quote.baseAmount,
       chargedAmount: quote.chargedAmount,
       pointsEarned: quote.pointsEarned,
-      level: member.level,
+      level: chargedMember.level,
       status: "booked",
       createdAt: now,
     };
@@ -148,16 +173,29 @@ export class OperationsService {
       await this.storage.insertBooking(booking);
     } catch (error) {
       // 预约落库失败时回补已扣款项，避免吞钱
-      await this.storage.refundMember(member.id, quote.chargedAmount, -quote.pointsEarned);
+      await this.storage.refundMember(chargedMember.id, quote.chargedAmount, -quote.pointsEarned);
       throw error;
     }
 
-    const refreshedMember = (await this.storage.getMember(member.id)) ?? chargedMember;
+    const refreshedMember = (await this.storage.getMember(chargedMember.id)) ?? chargedMember;
     return { booking, member: refreshedMember };
   }
 
   /** 取消预约：状态置为 cancelled，余额与积分按预约时扣款额原样回退。 */
   async cancelBooking(bookingId: string): Promise<{ booking: Booking; member: Member }> {
+    const booking = await this.storage.getBooking(bookingId);
+    if (!booking) {
+      throw new BusinessError(404, "预约不存在", "BOOKING_NOT_FOUND");
+    }
+    // 与新建预约使用同一包厢锁，保证取消与下单的结果可线性化：
+    // 取消进行到一半时，新下单不会基于旧状态做出错误判断。
+    return this.roomLocks.runExclusive(booking.roomId, () => this.cancelBookingLocked(bookingId));
+  }
+
+  private async cancelBookingLocked(
+    bookingId: string,
+  ): Promise<{ booking: Booking; member: Member }> {
+    // 锁内重读，避免读到锁外的过期快照
     const booking = await this.storage.getBooking(bookingId);
     if (!booking) {
       throw new BusinessError(404, "预约不存在", "BOOKING_NOT_FOUND");
