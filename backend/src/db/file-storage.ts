@@ -69,7 +69,9 @@ export class FileStorage implements Storage {
 
   async getRoom(id: string): Promise<Room | null> {
     const db = await this.load();
-    return db.rooms.find((room) => room.id === id) ?? null;
+    // 返回副本，与 Mongo lean() 的快照语义保持一致
+    const room = db.rooms.find((item) => item.id === id);
+    return room ? { ...room, facilities: [...room.facilities] } : null;
   }
 
   async updateRoomMaintenance(id: string, underMaintenance: boolean): Promise<Room | null> {
@@ -102,7 +104,8 @@ export class FileStorage implements Storage {
 
   async getBooking(id: string): Promise<Booking | null> {
     const db = await this.load();
-    return db.bookings.find((booking) => booking.id === id) ?? null;
+    const booking = db.bookings.find((item) => item.id === id);
+    return booking ? { ...booking } : null;
   }
 
   async markBookingCancelled(id: string): Promise<boolean> {
@@ -123,7 +126,8 @@ export class FileStorage implements Storage {
 
   async getMember(id: string): Promise<Member | null> {
     const db = await this.load();
-    return db.members.find((member) => member.id === id) ?? null;
+    const member = db.members.find((item) => item.id === id);
+    return member ? { ...member } : null;
   }
 
   async insertMember(member: Member): Promise<Member> {

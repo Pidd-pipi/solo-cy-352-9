@@ -1,5 +1,5 @@
 import type { Booking, Member, Room, Storage } from "../src/db/types";
-import { levelForTotalRecharge } from "../src/modules/pricing";
+import { levelForTotalRecharge, round2 } from "../src/modules/pricing";
 
 /** 测试用内存存储，行为与 FileStorage 保持一致。 */
 export class MemoryStorage implements Storage {
@@ -19,7 +19,9 @@ export class MemoryStorage implements Storage {
   }
 
   async getRoom(id: string): Promise<Room | null> {
-    return this.rooms.find((room) => room.id === id) ?? null;
+    // 返回副本，模拟 Mongo lean() 的快照语义：调用方持有的对象不随后续写入而变化
+    const room = this.rooms.find((item) => item.id === id);
+    return room ? { ...room, facilities: [...room.facilities] } : null;
   }
 
   async updateRoomMaintenance(id: string, underMaintenance: boolean): Promise<Room | null> {
@@ -44,7 +46,8 @@ export class MemoryStorage implements Storage {
   }
 
   async getBooking(id: string): Promise<Booking | null> {
-    return this.bookings.find((booking) => booking.id === id) ?? null;
+    const booking = this.bookings.find((item) => item.id === id);
+    return booking ? { ...booking } : null;
   }
 
   async markBookingCancelled(id: string): Promise<boolean> {
@@ -61,7 +64,9 @@ export class MemoryStorage implements Storage {
   }
 
   async getMember(id: string): Promise<Member | null> {
-    return this.members.find((member) => member.id === id) ?? null;
+    const member = this.members.find((item) => item.id === id);
+    // 返回副本，模拟 DB 快照语义：锁外拿到的会员对象不随后续扣款而变化
+    return member ? { ...member } : null;
   }
 
   async insertMember(member: Member): Promise<Member> {
@@ -74,8 +79,8 @@ export class MemoryStorage implements Storage {
     if (!member) {
       return null;
     }
-    member.balance += amount;
-    member.totalRecharge += amount;
+    member.balance = round2(member.balance + amount);
+    member.totalRecharge = round2(member.totalRecharge + amount);
     member.level = levelForTotalRecharge(member.totalRecharge);
     return { ...member };
   }
@@ -85,7 +90,7 @@ export class MemoryStorage implements Storage {
     if (!member || member.balance < amount) {
       return null;
     }
-    member.balance -= amount;
+    member.balance = round2(member.balance - amount);
     member.points = Math.max(0, member.points + pointsDelta);
     return { ...member };
   }
@@ -95,7 +100,7 @@ export class MemoryStorage implements Storage {
     if (!member) {
       return null;
     }
-    member.balance += amount;
+    member.balance = round2(member.balance + amount);
     member.points = Math.max(0, member.points + pointsDelta);
     return { ...member };
   }

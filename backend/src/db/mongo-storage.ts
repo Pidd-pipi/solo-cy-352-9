@@ -1,6 +1,5 @@
 import type { Booking, Member, Room, Storage } from "./types";
 import { BookingModel, MemberModel, RoomModel } from "./mongoose-models";
-import { levelForTotalRecharge } from "../modules/pricing";
 
 type RoomDoc = Room & { _id: unknown };
 type BookingDoc = Booking & { _id: unknown };
@@ -94,46 +93,56 @@ export class MongoStorage implements Storage {
   }
 
   async rechargeMember(id: string, amount: number): Promise<Member | null> {
+    // 单条聚合管道更新：金额取整到分，并按累计充值同步等级，避免 $inc 浮点误差与多次往返
     const updated = (await MemberModel.findByIdAndUpdate(
       id,
-      { $inc: { balance: amount, totalRecharge: amount } },
+      [
+        {
+          $set: {
+            balance: { $round: [{ $add: ["$balance", amount] }, 2] },
+            totalRecharge: { $round: [{ $add: ["$totalRecharge", amount] }, 2] },
+            level: {
+              $switch: {
+                branches: [
+                  { case: { $gte: [{ $add: ["$totalRecharge", amount] }, 2000] }, then: "gold" },
+                  { case: { $gte: [{ $add: ["$totalRecharge", amount] }, 500] }, then: "silver" },
+                ],
+                default: "bronze",
+              },
+            },
+          },
+        },
+      ],
       { new: true },
     ).lean()) as unknown as MemberDoc | null;
-    if (!updated) {
-      return null;
-    }
-    // 充值累计金额变化可能触发等级提升
-    const nextLevel = levelForTotalRecharge(updated.totalRecharge);
-    if (nextLevel !== updated.level) {
-      const leveled = (await MemberModel.findByIdAndUpdate(
-        id,
-        { $set: { level: nextLevel } },
-        { new: true },
-      ).lean()) as unknown as MemberDoc | null;
-      return normalizeMember(leveled);
-    }
     return normalizeMember(updated);
   }
 
   async chargeMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
+    // 余额条件 + 取整在同一条原子更新内完成，任何路径下都不会透支或留下浮点尾差
     const updated = (await MemberModel.findOneAndUpdate(
       { _id: id, balance: { $gte: amount } },
-      {
-        $inc: { balance: -amount, points: pointsDelta },
-      },
+      [
+        {
+          $set: {
+            balance: { $round: [{ $subtract: ["$balance", amount] }, 2] },
+            points: { $max: [0, { $add: ["$points", pointsDelta] }] },
+          },
+        },
+      ],
       { new: true },
     ).lean()) as unknown as MemberDoc | null;
     return normalizeMember(updated);
   }
 
   async refundMember(id: string, amount: number, pointsDelta: number): Promise<Member | null> {
-    // $max 保证取消预约回退积分后积分不会变成负数
+    // $max 保证取消预约回退积分后积分不会变成负数；金额取整到分
     const updated = (await MemberModel.findOneAndUpdate(
       { _id: id },
       [
         {
           $set: {
-            balance: { $add: ["$balance", amount] },
+            balance: { $round: [{ $add: ["$balance", amount] }, 2] },
             points: { $max: [0, { $add: ["$points", pointsDelta] }] },
           },
         },
