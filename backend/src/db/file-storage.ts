@@ -123,9 +123,21 @@ export class FileStorage implements Storage {
     return booking ? { ...booking } : null;
   }
 
-  async findBookingByRequestId(requestId: string): Promise<Booking | null> {
+  async findLiveBookingByRequest(input: {
+    requestId: string;
+    memberId: string;
+    roomId: string;
+  }): Promise<Booking | null> {
     const db = await this.load();
-    const booking = db.bookings.find((item) => item.requestId === requestId);
+    // 作用域隔离：requestId 必须同时匹配会员与包厢，且仅认未结束态
+    const live: BookingStatus[] = ["pending_payment", "booked"];
+    const booking = db.bookings.find(
+      (item) =>
+        item.requestId === input.requestId &&
+        item.memberId === input.memberId &&
+        item.roomId === input.roomId &&
+        live.includes(item.status),
+    );
     return booking ? { ...booking } : null;
   }
 

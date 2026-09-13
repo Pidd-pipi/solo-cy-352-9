@@ -72,8 +72,18 @@ export class MongoStorage implements Storage {
     return normalizeBooking(doc);
   }
 
-  async findBookingByRequestId(requestId: string): Promise<Booking | null> {
-    const doc = (await BookingModel.findOne({ requestId }).lean()) as unknown as BookingDoc | null;
+  async findLiveBookingByRequest(input: {
+    requestId: string;
+    memberId: string;
+    roomId: string;
+  }): Promise<Booking | null> {
+    const doc = (await BookingModel.findOne({
+      requestId: input.requestId,
+      memberId: input.memberId,
+      roomId: input.roomId,
+      // 作用域隔离：仅认未结束态，已取消/已失败的请求键可重新发起
+      status: { $in: ["pending_payment", "booked"] },
+    }).lean()) as unknown as BookingDoc | null;
     return normalizeBooking(doc);
   }
 

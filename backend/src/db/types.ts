@@ -103,8 +103,17 @@ export interface Storage {
   listBookings(filter?: { status?: BookingStatus }): Promise<Booking[]>;
   insertBooking(booking: Booking): Promise<Booking>;
   getBooking(id: string): Promise<Booking | null>;
-  /** 客户端幂等键查询同一请求已创建的预约 */
-  findBookingByRequestId(requestId: string): Promise<Booking | null>;
+  /**
+   * 幂等请求查找（作用域隔离）：仅当 (requestId, memberId, roomId) 三元组完全一致
+   * 且预约处于未结束态（pending_payment / booked）时才视为同一请求的重试。
+   * 因此不同会员或不同包厢即使复用同一 requestId，也绝不会返回他人的预约。
+   * 已取消/已失败的旧请求键允许重新发起。
+   */
+  findLiveBookingByRequest(input: {
+    requestId: string;
+    memberId: string;
+    roomId: string;
+  }): Promise<Booking | null>;
   /**
    * 原子状态迁移（compare-and-set）：仅当当前状态在 expectedStatuses 中时才写入 nextStatus。
    * 返回 false 表示状态已被其他操作改变。

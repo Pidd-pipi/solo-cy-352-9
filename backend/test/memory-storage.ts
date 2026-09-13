@@ -64,8 +64,19 @@ export class MemoryStorage implements Storage {
     return booking ? { ...booking } : null;
   }
 
-  async findBookingByRequestId(requestId: string): Promise<Booking | null> {
-    const booking = this.bookings.find((item) => item.requestId === requestId);
+  async findLiveBookingByRequest(input: {
+    requestId: string;
+    memberId: string;
+    roomId: string;
+  }): Promise<Booking | null> {
+    const live: BookingStatus[] = ["pending_payment", "booked"];
+    const booking = this.bookings.find(
+      (item) =>
+        item.requestId === input.requestId &&
+        item.memberId === input.memberId &&
+        item.roomId === input.roomId &&
+        live.includes(item.status),
+    );
     return booking ? { ...booking } : null;
   }
 

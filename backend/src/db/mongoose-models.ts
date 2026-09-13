@@ -15,7 +15,7 @@ const roomSchema = new Schema<Room>(
 
 const bookingSchema = new Schema<Booking>(
   {
-    requestId: { type: String, index: true, sparse: true },
+    requestId: { type: String },
     roomId: { type: String, required: true, index: true },
     roomName: { type: String, required: true },
     memberId: { type: String, required: true, index: true },
@@ -35,6 +35,19 @@ const bookingSchema = new Schema<Booking>(
     createdAt: { type: String, required: true },
   },
   { versionKey: false },
+);
+
+// 幂等键的作用域唯一约束：同一 (requestId, 会员, 包厢) 在未结束态下只允许一条预约。
+// 部分索引只覆盖未结束态，因此不同会员/包厢复用同一 requestId、以及失败/取消后用同键重试都不受限。
+bookingSchema.index(
+  { requestId: 1, memberId: 1, roomId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      requestId: { $type: "string" },
+      status: { $in: ["pending_payment", "booked"] },
+    },
+  },
 );
 
 const walletTransactionSchema = new Schema<WalletTransaction>(

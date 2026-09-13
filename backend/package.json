@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx --test test/operations.test.ts test/http.test.ts test/regression.test.ts test/fault-recovery.test.ts"
+    "test": "tsx --test test/operations.test.ts test/http.test.ts test/regression.test.ts test/fault-recovery.test.ts test/idempotency-key.test.ts"
   },
   "dependencies": {
     "express": "^4.21.2",

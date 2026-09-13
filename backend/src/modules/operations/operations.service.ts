@@ -175,20 +175,26 @@ export class OperationsService {
     // 先修复本包厢遗留的中间态，再开始新交易
     await this.recoverRoomBookings(roomId);
 
-    // 幂等：同一请求重试直接回到原预约（对账后状态确定）
+    // 幂等（作用域隔离）：只有 (requestId, memberId, roomId) 完全一致的未结束预约才算同一请求。
+    // 不同会员或不同包厢即使复用同一 requestId，也只会落到这里之后的正常下单路径，
+    // 绝不可能取回他人/他厅的预约或账户信息。
     if (requestId) {
-      const repeated = await this.storage.findBookingByRequestId(requestId);
+      const repeated = await this.storage.findLiveBookingByRequest({ requestId, memberId, roomId });
       if (repeated) {
         const recovered = await this.recoverBooking(repeated);
         if (recovered.status === "booked") {
-          const member = (await this.storage.getMember(recovered.memberId))!;
+          // 双保险：确认复用的预约确实属于当前会员与包厢（越权数据直接拒绝而非返回）
+          if (recovered.memberId !== memberId || recovered.roomId !== roomId) {
+            throw new BusinessError(
+              409,
+              "幂等请求命中了不属于当前会员/包厢的预约，已阻止返回越权数据",
+              "IDEMPOTENCY_SCOPE_MISMATCH",
+            );
+          }
+          const member = (await this.storage.getMember(memberId))!;
           return { booking: recovered, member };
         }
-        throw new BusinessError(
-          409,
-          "该预约请求此前已失败并完成退款对账，请重新发起预约",
-          "BOOKING_REQUEST_ALREADY_FAILED",
-        );
+        // recovered 为 failed（pending 中途失败且已对账退款）：允许用同一请求键重新发起
       }
     }
 
@@ -229,6 +235,25 @@ export class OperationsService {
       );
     }
 
+    // 并发同键双击兜底：插单前在锁内再查一次同一作用域的未结束预约。
+    // 第一个请求可能已插入 pending（尚未 booked），此时第二个请求必须复用它而不是再建一单、再扣一次款。
+    if (requestId) {
+      const racing = await this.storage.findLiveBookingByRequest({ requestId, memberId, roomId });
+      if (racing) {
+        const recovered = await this.recoverBooking(racing);
+        if (recovered.status === "booked") {
+          const latestMember = await this.storage.getMember(memberId);
+          return { booking: recovered, member: latestMember ?? member };
+        }
+        // 对方的同键交易仍在途或已失败：不再另建单，按冲突拒绝（无资金变动），客户端可稍后用同键重试
+        throw new BusinessError(
+          409,
+          "同一预约请求正在处理中，请勿重复提交",
+          "IDEMPOTENCY_REQUEST_IN_FLIGHT",
+        );
+      }
+    }
+
     // 先落一笔 pending_payment 预约（此刻尚未扣款），让整个交易可被对账恢复
     const bookingId = randomUUID();
     const booking: Booking = {
@@ -247,7 +272,23 @@ export class OperationsService {
       status: "pending_payment",
       createdAt: new Date().toISOString(),
     };
-    await this.storage.insertBooking(booking); // 扣款前写入；若失败直接抛错，未发生任何资金变动
+    try {
+      await this.storage.insertBooking(booking); // 扣款前写入；若失败直接抛错，未发生任何资金变动
+    } catch (error) {
+      // 多实例并发同键重试时，可能由数据库唯一约束（requestId,memberId,roomId）拦下：
+      // 转回幂等查找，复用已存在的同一请求预约，而不是重复扣款。
+      if (isDuplicateKeyError(error) && requestId) {
+        const winner = await this.storage.findLiveBookingByRequest({ requestId, memberId, roomId });
+        if (winner) {
+          const recovered = await this.recoverBooking(winner);
+          if (recovered.status === "booked") {
+            const latestMember = await this.storage.getMember(memberId);
+            return { booking: recovered, member: latestMember ?? member };
+          }
+        }
+      }
+      throw error;
+    }
 
     // 幂等扣款（余额条件 + 流水在存储层一次原子写入）
     const chargeId = `${bookingId}:charge`;
@@ -535,4 +576,9 @@ function displayRange(startTime: string, endTime: string): string {
     hour12: false,
   });
   return `${fmt.format(new Date(startTime))} - ${fmt.format(new Date(endTime))}`;
+}
+
+/** 识别 MongoDB 唯一约束冲突（错误码 11000）。 */
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: number }).code === 11000;
 }
